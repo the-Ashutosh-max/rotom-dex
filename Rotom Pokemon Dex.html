@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Complete Gen 9 Rotom Dex</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a2e; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex; flex-direction: column; justify-content: space-between;
+        }
+
+        #loading-indicator {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #00ffff; font-size: 20px; font-weight: bold;
+            text-shadow: 0 0 10px #00ffff;
+            opacity: 0; transition: opacity 0.3s;
+        }
+
+        .hud-panel {
+            padding: 20px; color: white; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+
+        #instructions {
+            text-align: center; opacity: 0.7; font-size: 14px; padding-bottom: 30px;
+        }
+
+        .key {
+            background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 4px; font-weight: bold; color: #fff; border: 1px solid rgba(255,255,255,0.4);
+        }
+        
+        #dex-counter {
+            position: absolute; top: 20px; right: 20px;
+            font-size: 24px; font-weight: bold; color: rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-layer">
+        <div class="hud-panel">
+            <h1 style="margin:0; font-size: 1.2rem; color: #ff9900;">ROTOM OS <span style="font-size:0.8rem; color:#aaa;">v9.0.2</span></h1>
+        </div>
+        <div id="loading-indicator">ACCESSING PALDEA DATABASE...</div>
+        <div id="dex-counter">#000</div>
+        <div id="instructions">
+            <p>Drag to Rotate • Click <span class="key">▶</span> / <span class="key">◀</span> on device</p>
+        </div>
+    </div>
+
+    <!-- Three.js Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // --- Configuration ---
+        const GEN9_START = 906; // Sprigatito
+        const GEN9_END = 1025;  // Pecharunt (Current end of Gen 9 DLC)
+        
+        const TYPE_COLORS = {
+            normal: 0xA8A77A, fire: 0xEE8130, water: 0x6390F0, electric: 0xF7D02C,
+            grass: 0x7AC74C, ice: 0x96D9D6, fighting: 0xC22E28, poison: 0xA33EA1,
+            ground: 0xE2BF65, flying: 0xA98FF3, psychic: 0xF95587, bug: 0xA6B91A,
+            rock: 0xB6A136, ghost: 0x735797, dragon: 0x6F35FC, steel: 0xB7B7CE,
+            fairy: 0xD685AD, dark: 0x705746
+        };
+
+        // Global Variables
+        let scene, camera, renderer, controls, raycaster, mouse;
+        let pokedexGroup, screenMesh, holoGroup, currentSprite, infoMesh;
+        let btnNext, btnPrev;
+        let currentId = GEN9_START;
+        let isFetching = false;
+
+        // --- Initialization ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x101018);
+            scene.fog = new THREE.FogExp2(0x101018, 0.015);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 0, 13);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 6;
+            controls.maxDistance = 20;
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // Dynamic colored light (changes with pokemon type)
+            window.typeLight = new THREE.PointLight(0x7AC74C, 1, 10);
+            window.typeLight.position.set(0, 2, 2);
+            scene.add(window.typeLight);
+
+            // Inputs
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            window.addEventListener('pointerdown', onPointerDown);
+            window.addEventListener('resize', onWindowResize);
+
+            // Build Scene
+            createEnvironment();
+            createPokedex();
+            
+            // Initial Load
+            fetchPokemonData(currentId);
+            
+            animate();
+        }
+
+        // --- 3D Objects ---
+
+        function createEnvironment() {
+            const gridHelper = new THREE.GridHelper(50, 50, 0x333344, 0x111111);
+            gridHelper.position.y = -4;
+            scene.add(gridHelper);
+            
+            // Floating particles
+            const particlesGeo = new THREE.BufferGeometry();
+            const particlesCount = 200;
+            const posArray = new Float32Array(particlesCount * 3);
+            for(let i = 0; i < particlesCount * 3; i++) {
+                posArray[i] = (Math.random() - 0.5) * 30;
+            }
+            particlesGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            const particlesMat = new THREE.PointsMaterial({ size: 0.1, color: 0xffffff, transparent: true, opacity: 0.5 });
+            const particlesMesh = new THREE.Points(particlesGeo, particlesMat);
+            scene.add(particlesMesh);
+        }
+
+        function createPokedex() {
+            pokedexGroup = new THREE.Group();
+
+            // 1. Body
+            const bodyGeo = new THREE.BoxGeometry(4, 6.5, 0.4);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff7f00, roughness: 0.2, metalness: 0.5 }); // Rotom Orange
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.castShadow = true; 
+            pokedexGroup.add(body);
+
+            // Top Spikes (Rotom Head)
+            const spikeGeo = new THREE.ConeGeometry(0.5, 1, 4);
+            const spike1 = new THREE.Mesh(spikeGeo, bodyMat);
+            spike1.position.set(0, 3.5, 0);
+            pokedexGroup.add(spike1);
+
+            // 2. Screen
+            const screenGeo = new THREE.PlaneGeometry(3.6, 5.2);
+            const screenMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            screenMesh = new THREE.Mesh(screenGeo, screenMat);
+            screenMesh.position.z = 0.21;
+            pokedexGroup.add(screenMesh);
+
+            // 3. Buttons
+            const btnGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 32);
+            const btnMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, emissive: 0x111111 });
+            
+            // Next
+            btnNext = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.5, 32), btnMat);
+            btnNext.rotation.z = -Math.PI / 2;
+            btnNext.position.set(1.3, -2.5, 0.3);
+            btnNext.userData = { isButton: true, action: 'next' };
+            pokedexGroup.add(btnNext);
+
+            // Prev
+            btnPrev = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.5, 32), btnMat);
+            btnPrev.rotation.z = Math.PI / 2;
+            btnPrev.position.set(-1.3, -2.5, 0.3);
+            btnPrev.userData = { isButton: true, action: 'prev' };
+            pokedexGroup.add(btnPrev);
+
+            // Camera Lens (Back)
+            const lens = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.8, 0.8, 0.1, 32),
+                new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8, roughness: 0.2 })
+            );
+            lens.rotation.x = Math.PI/2;
+            lens.position.set(0, 2, -0.2);
+            pokedexGroup.add(lens);
+
+            // Hologram Anchor
+            holoGroup = new THREE.Group();
+            holoGroup.position.z = 0.6;
+            holoGroup.position.y = 0.5;
+            pokedexGroup.add(holoGroup);
+
+            scene.add(pokedexGroup);
+        }
+
+        // --- Data & API Logic ---
+
+        async function fetchPokemonData(id) {
+            if (isFetching) return;
+            isFetching = true;
+            document.getElementById('loading-indicator').style.opacity = 1;
+            
+            // Update UI Counter immediately
+            document.getElementById('dex-counter').innerText = `#${id}`;
+
+            try {
+                const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`);
+                if (!response.ok) throw new Error("Data not found");
+                const data = await response.json();
+
+                // Extract essential data
+                const pokemon = {
+                    name: data.name.charAt(0).toUpperCase() + data.name.slice(1).replace('-', ' '),
+                    id: data.id,
+                    types: data.types.map(t => t.type.name),
+                    // Prefer official artwork, fallback to home, fallback to pixel
+                    sprite: data.sprites.other['official-artwork'].front_default || 
+                           data.sprites.front_default
+                };
+
+                updateDisplay(pokemon);
+            } catch (err) {
+                console.error(err);
+                // Error state display
+                displayError();
+            } finally {
+                isFetching = false;
+                document.getElementById('loading-indicator').style.opacity = 0;
+            }
+        }
+
+        function updateDisplay(pokemon) {
+            // 1. Clear old assets
+            while(holoGroup.children.length > 0){ 
+                holoGroup.remove(holoGroup.children[0]); 
+            }
+
+            // 2. Determine Color Theme based on Primary Type
+            const mainType = pokemon.types[0];
+            const themeColorHex = TYPE_COLORS[mainType] || 0xffffff;
+            const themeColor = new THREE.Color(themeColorHex);
+            
+            // Update Lighting
+            window.typeLight.color.set(themeColor);
+            
+            // Update Screen Tint (Flash effect)
+            const flashGeo = new THREE.PlaneGeometry(3.6, 5.2);
+            const flashMat = new THREE.MeshBasicMaterial({ color: themeColor, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending });
+            const flash = new THREE.Mesh(flashGeo, flashMat);
+            flash.position.z = 0.22;
+            pokedexGroup.add(flash);
+            
+            // Fade out flash
+            let op = 0.6;
+            const t = setInterval(() => {
+                op -= 0.04;
+                flash.material.opacity = op;
+                if(op <= 0) { pokedexGroup.remove(flash); clearInterval(t); }
+            }, 30);
+
+            // 3. Sprite Plane
+            const loader = new THREE.TextureLoader();
+            loader.load(pokemon.sprite, (texture) => {
+                const ar = texture.image.width / texture.image.height;
+                const height = 3;
+                const width = height * ar;
+                
+                const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, side: THREE.DoubleSide });
+                const geo = new THREE.PlaneGeometry(width, height);
+                currentSprite = new THREE.Mesh(geo, mat);
+                holoGroup.add(currentSprite);
+            });
+
+            // 4. Text Info Panel (Canvas)
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+
+            // Gradient bg for text
+            const grd = ctx.createLinearGradient(0,0,512,0);
+            grd.addColorStop(0, "rgba(0,0,0,0)");
+            grd.addColorStop(0.5, "rgba(0,0,0,0.8)");
+            grd.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = grd;
+            ctx.fillRect(0, 0, 512, 256);
+
+            // Name
+            ctx.font = "bold 50px Segoe UI, Arial";
+            ctx.fillStyle = "#" + themeColor.getHexString();
+            ctx.textAlign = "center";
+            ctx.shadowColor="black";
+            ctx.shadowBlur=5;
+            ctx.fillText(pokemon.name.toUpperCase(), 256, 70);
+
+            // Type
+            ctx.fillStyle = "white";
+            ctx.font = "30px Segoe UI, Arial";
+            ctx.fillText(pokemon.types.join(' / ').toUpperCase(), 256, 120);
+
+            // ID
+            ctx.font = "italic 24px Segoe UI, Arial";
+            ctx.fillStyle = "#aaa";
+            ctx.fillText(`No. ${pokemon.id}`, 256, 160);
+
+            const infoTex = new THREE.CanvasTexture(canvas);
+            const infoGeo = new THREE.PlaneGeometry(3, 1.5);
+            const infoMat = new THREE.MeshBasicMaterial({ map: infoTex, transparent: true });
+            infoMesh = new THREE.Mesh(infoGeo, infoMat);
+            infoMesh.position.y = -2.3;
+            infoMesh.position.z = 0.2;
+            holoGroup.add(infoMesh);
+        }
+
+        function displayError() {
+            // Fallback if offline or API error
+            const cvs = document.createElement('canvas');
+            cvs.width = 512; cvs.height = 256;
+            const cx = cvs.getContext('2d');
+            cx.fillStyle = "red";
+            cx.font = "40px Arial";
+            cx.textAlign = "center";
+            cx.fillText("DATA MISSING", 256, 128);
+            
+            const tex = new THREE.CanvasTexture(cvs);
+            const mesh = new THREE.Mesh(new THREE.PlaneGeometry(3, 1.5), new THREE.MeshBasicMaterial({map:tex, transparent:true}));
+            mesh.position.y = -1;
+            holoGroup.add(mesh);
+        }
+
+        function onPointerDown(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(pokedexGroup.children);
+
+            if (intersects.length > 0) {
+                const obj = intersects[0].object;
+                if (obj.userData.isButton && !isFetching) {
+                    // Button Anim
+                    const originalZ = obj.position.z;
+                    obj.position.z -= 0.05;
+                    setTimeout(() => obj.position.z = originalZ, 100);
+
+                    if (obj.userData.action === 'next') {
+                        currentId++;
+                        if(currentId > GEN9_END) currentId = GEN9_START;
+                        fetchPokemonData(currentId);
+                    } else if (obj.userData.action === 'prev') {
+                        currentId--;
+                        if(currentId < GEN9_START) currentId = GEN9_END;
+                        fetchPokemonData(currentId);
+                    }
+                }
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = Date.now() * 0.001;
+
+            // Idle float
+            if(pokedexGroup) {
+                pokedexGroup.position.y = Math.sin(time) * 0.2;
+                pokedexGroup.rotation.x = Math.sin(time * 0.5) * 0.05;
+                pokedexGroup.rotation.z = Math.cos(time * 0.3) * 0.05;
+            }
+
+            // Hologram float
+            if(currentSprite) {
+                currentSprite.rotation.y = Math.sin(time * 1.5) * 0.1; // Slight turn
+            }
+
+            // Button Glow pulse
+            if(btnNext) {
+                btnNext.material.emissiveIntensity = 0.2 + Math.sin(time * 4) * 0.2;
+                btnPrev.material.emissiveIntensity = 0.2 + Math.sin(time * 4 + 1) * 0.2;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
